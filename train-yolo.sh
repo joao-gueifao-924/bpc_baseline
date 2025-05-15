@@ -1,124 +1,180 @@
 #!/bin/bash
 
-# Script to iterate from 0 to 9 and run YOLO data preparation and training.
-# Logs output for each object ID to a separate, sequentially numbered file.
-# Allows continuing training from the latest checkpoint if specified.
+# Script to prepare data and train a single 10-class YOLO model
+#
+# This script automates the process of:
+# 1. Preparing a dataset for YOLO object detection training. This involves
+#    running a Python script (`prepare_data.py`) that processes a raw dataset
+#    (e.g., images and annotations) and organizes it into the format expected
+#    by YOLO, including generating a `data.yaml` file.
+# 2. Training a YOLO model using the prepared dataset. This involves running
+#    another Python script (`train.py`) with specified training parameters
+#    like model variant, number of epochs, batch size, etc.
+#
+# The script allows overriding default paths and training parameters via
+# command-line arguments. It also logs its execution and the output of
+# the underlying Python scripts.
 
 # Exit immediately if a command exits with a non-zero status.
 set -e
 
-# Create a directory for log files if it doesn't already exist
-LOG_DIR="/workspace/yolo_processing_logs"
-mkdir -p "${LOG_DIR}"
-
 # --- Script Configuration ---
-# Default epochs for each training run. Can be overridden by a command-line argument.
-DEFAULT_EPOCHS=20
-# Default project directory for YOLO runs
-PROJECT_DIR="runs/detect"
-# --- End Script Configuration ---
+# These variables define default paths, script locations, and training parameters.
+# They can be overridden by command-line arguments.
 
-# --- Parse Command-Line Arguments ---
-# Initialize flags/variables
-CONTINUE_TRAINING_FLAG=false
+# Default path to the raw (unprocessed) dataset.
+DEFAULT_RAW_DATASET_PATH="/workspace/bpc_phase2/train_pbr"
+
+# Processed dataset path (output of prepare_data.py, input to YOLO)
+# This is where the `prepare_data.py` script will place the YOLO-formatted dataset.
+DEFAULT_PROCESSED_DATASET_OUTPUT_PATH="/workspace/datasets/yolo11/all_objects_processed"
+
+# Python scripts location (assuming they are in bpc/yolo/ relative to this script)
+PREPARE_DATA_SCRIPT="bpc/yolo/prepare_data.py" # Script for data preparation
+TRAIN_SCRIPT="bpc/yolo/train.py"               # Script for model training
+
+# Default training parameters (can be overridden by command-line arguments)
+DEFAULT_EPOCHS=100                             # Number of training epochs
+DEFAULT_MODEL_VARIANT="medium"                 # YOLO model size (e.g., nano, small, medium, large, xlarge)
+DEFAULT_PROJECT_DIR="runs/detect_all_objects"  # YOLO's output directory for storing training runs
+DEFAULT_BATCH_SIZE=16                          # Batch size for training
+DEFAULT_IMG_SIZE=1280                          # Image size for training (input resolution)
+DEFAULT_WORKERS=8                              # Number of worker threads for data loading
+DEFAULT_CAMERA_ID=1                            # Default camera ID to process from the raw dataset
+DEFAULT_CONTINUE_TRAINING_FLAG=false           # Flag to indicate if training should resume from a checkpoint
+DEFAULT_SKIP_DATA_PREP_FLAG=false              # Flag to skip the data preparation step
+DEFAULT_LOG_DIR="/workspace/yolo_pipeline_logs" # Directory to store pipeline log files
+DEFAULT_YOLO_DATA_YAML_PATH="bpc/yolo/configs/data_all_objects.yaml" # Path to the generated YOLO data configuration file
+
+# Initialize runtime parameters with default values.
+# These will be updated if corresponding command-line arguments are provided.
 EPOCHS_FOR_RUN="${DEFAULT_EPOCHS}"
+MODEL_VARIANT="${DEFAULT_MODEL_VARIANT}"
+PROJECT_DIR_RUN="${DEFAULT_PROJECT_DIR}"
+BATCH_SIZE_RUN="${DEFAULT_BATCH_SIZE}"
+IMG_SIZE_RUN="${DEFAULT_IMG_SIZE}"
+WORKERS_RUN="${DEFAULT_WORKERS}"
+CAMERA_ID_RUN="${DEFAULT_CAMERA_ID}"
+CONTINUE_TRAINING_FLAG="${DEFAULT_CONTINUE_TRAINING_FLAG}"
+SKIP_DATA_PREP_FLAG="${DEFAULT_SKIP_DATA_PREP_FLAG}"
+YOLO_DATA_YAML_PATH_RUN="${DEFAULT_YOLO_DATA_YAML_PATH}"
+RAW_DATASET_PATH_RUN="${DEFAULT_RAW_DATASET_PATH}"
+PROCESSED_DATASET_OUTPUT_PATH_RUN="${DEFAULT_PROCESSED_DATASET_OUTPUT_PATH}"
+LOG_DIR_RUN="${DEFAULT_LOG_DIR}"
 
-# Process arguments
 while [[ "$#" -gt 0 ]]; do
-    case $1 in
-        --continue_training) CONTINUE_TRAINING_FLAG=true; echo "Flag --continue_training is set. Will attempt to load latest checkpoints."; shift ;;
-        --epochs) EPOCHS_FOR_RUN="$2"; echo "Number of epochs for this run set to: ${EPOCHS_FOR_RUN}"; shift; shift ;;
-        --project_dir) PROJECT_DIR="$2"; echo "YOLO project directory set to: ${PROJECT_DIR}"; shift; shift ;;
-        *) echo "Unknown parameter passed: $1"; exit 1 ;;
-    esac
+  case $1 in
+    --epochs) EPOCHS_FOR_RUN="$2"; shift ;;
+    --model_variant) MODEL_VARIANT="$2"; shift ;;
+    --project_dir) PROJECT_DIR_RUN="$2"; shift ;;
+    --batch_size) BATCH_SIZE_RUN="$2"; shift ;;
+    --img_size) IMG_SIZE_RUN="$2"; shift ;;
+    --workers) WORKERS_RUN="$2"; shift ;;
+    --camera_id) CAMERA_ID_RUN="$2"; shift ;;
+    --yolo_data_yaml_path) YOLO_DATA_YAML_PATH_RUN="$2"; shift ;;
+    --raw_dataset_path) RAW_DATASET_PATH_RUN="$2"; shift ;;
+    --processed_dataset_output_path) PROCESSED_DATASET_OUTPUT_PATH_RUN="$2"; shift ;;
+    --log_dir) LOG_DIR_RUN="$2"; shift ;;
+    --continue_training) CONTINUE_TRAINING_FLAG=true ;;
+    --skip_data_prep) SKIP_DATA_PREP_FLAG=true ;;
+    *) echo "Unknown parameter passed to train-yolo.sh: $1"; exit 1 ;;
+  esac
+  shift
 done
-# --- End Parse Command-Line Arguments ---
 
-echo "Starting YOLO data preparation and training loop..."
-echo "Log files will be stored in the '${LOG_DIR}' directory."
-echo "YOLO project directory for runs: '${PROJECT_DIR}'"
-echo "Epochs for each training session in this script run: ${EPOCHS_FOR_RUN}"
-if [ "$CONTINUE_TRAINING_FLAG" = true ]; then
-  echo "Script will attempt to continue training from latest checkpoints."
+mkdir -p "${LOG_DIR_RUN}"
+PIPELINE_LOG_FILE="${LOG_DIR_RUN}/train_pipeline_$(date +%Y%m%d_%H%M%S).log"
+
+echo "YOLO Training Pipeline Started: $(date)"
+echo "--------------------------------------------------"
+
+# Redirect all stdout and stderr of this script to the log file and also print to console.
+exec > >(tee -i "${PIPELINE_LOG_FILE}") 2>&1
+
+# Print the effective runtime parameters being used for this run.
+echo "Runtime Parameters:"
+echo "Epochs: ${EPOCHS_FOR_RUN}"
+echo "Model Variant: ${MODEL_VARIANT}"
+echo "Project Directory: ${PROJECT_DIR_RUN}"
+echo "Batch Size: ${BATCH_SIZE_RUN}"
+echo "Image Size: ${IMG_SIZE_RUN}"
+echo "Workers: ${WORKERS_RUN}"
+echo "Camera ID: ${CAMERA_ID_RUN}"
+echo "Continue Training: ${CONTINUE_TRAINING_FLAG}"
+echo "Skip Data Preparation: ${SKIP_DATA_PREP_FLAG}"
+echo "YOLO Data YAML Path: ${YOLO_DATA_YAML_PATH_RUN}"
+echo "Raw Dataset Path: ${RAW_DATASET_PATH_RUN}"
+echo "Processed Dataset Output Path: ${PROCESSED_DATASET_OUTPUT_PATH_RUN}"
+echo "Log Directory: ${LOG_DIR_RUN}"
+echo "--------------------------------------------------"
+
+
+# --- Step 1: Data Preparation ---
+# This step processes the raw dataset into a format suitable for YOLO training
+# using the `prepare_data.py` script. It can be skipped using the
+# `--skip_data_prep` flag.
+if [ "$SKIP_DATA_PREP_FLAG" = false ]; then
+  echo "Running Data Preparation..."
+  echo "Output will be in ${PROCESSED_DATASET_OUTPUT_PATH_RUN}"
+  
+  mkdir -p "${PROCESSED_DATASET_OUTPUT_PATH_RUN}"
+  
+  # Execute the data preparation script.
+  # The -u flag for python3 ensures unbuffered output, which is good for logging.
+  python3 -u "${PREPARE_DATA_SCRIPT}" \
+    --dataset_path "${RAW_DATASET_PATH_RUN}" \
+    --output_path "${PROCESSED_DATASET_OUTPUT_PATH_RUN}" \
+    --camera_id "${CAMERA_ID_RUN}" \
+    --yolo_data_yaml_path "${YOLO_DATA_YAML_PATH_RUN}"
+  
+  echo "Data Preparation complete."
 else
-  echo "Script will start new training sessions (or from base models if no checkpoints specified to load)."
+  echo "Skipping Data Preparation as per --skip_data_prep flag."
 fi
-echo "=================================================="
 
-# Loop through integers from 0 to 9 (inclusive)
-# You can adjust this range if you have more than 10 objects.
-# For example, for 100 objects: for N in $(seq 0 99)
-for N in {0..9}
-do
-  # Format object ID with leading zeros for consistency with prepare_data.py if needed
-  # If prepare_data.py expects simple numbers like 0, 1, 2, keep ${N}
-  # If it also needs formatted IDs, adjust accordingly.
-  # For this example, we assume prepare_data.py uses plain ${N}.
-  FORMATTED_N_LOG=$(printf "%06d" ${N}) # For log file naming consistency
-
-  echo "---"
-  echo "Processing for Object ID (N): ${N} (Formatted for logs: ${FORMATTED_N_LOG})"
-  echo "------------------------------------"
-
-  # Define output and data paths using the current value of N
-  # Ensure these paths are correctly formatted if your other scripts expect leading zeros
-  OUTPUT_PATH_DATA_PREP="/workspace/datasets/yolo11/train_obj_${N}" # Assuming this script uses plain N
-  DATA_PATH_TRAIN_CONFIG="/workspace/bpc_baseline/bpc/yolo/configs/data_obj_${N}.yaml" # Assuming this uses plain N
-
-  # --- Logic for sequentially numbered log files ---
-  # Using formatted N for log file names
-  BASE_LOG_NAME="${LOG_DIR}/obj_${FORMATTED_N_LOG}_processing"
-  LOG_EXT=".log"
-  ACTUAL_LOG_FILE="${BASE_LOG_NAME}${LOG_EXT}"
-  COUNTER=1
-  while [ -f "${ACTUAL_LOG_FILE}" ]; do
-    ACTUAL_LOG_FILE="${BASE_LOG_NAME}_${COUNTER}${LOG_EXT}"
-    COUNTER=$((COUNTER + 1))
-  done
-  # --- End of logic for sequentially numbered log files ---
-
-  echo "Starting processing for Object ID ${N} at $(date)" > "${ACTUAL_LOG_FILE}"
-  echo "Python script outputs will be logged to: ${ACTUAL_LOG_FILE}"
-  echo "" >> "${ACTUAL_LOG_FILE}"
+# Sanity check: Ensure the YOLO data YAML file exists.
+# This file is crucial for the training step and should be generated by
+# `prepare_data.py` or provided correctly if data preparation is skipped.
+if [ ! -f "${YOLO_DATA_YAML_PATH_RUN}" ]; then
+    echo "ERROR: YOLO data YAML file not found at ${YOLO_DATA_YAML_PATH_RUN} after data preparation step (or if skipped)."
+    echo "Please ensure prepare_data.py runs successfully and generates this file, or that the path is correct."
+    exit 1
+fi
+echo "Using YOLO data YAML: ${YOLO_DATA_YAML_PATH_RUN}"
+echo "--------------------------------------------------"
 
 
-  # Command 1: Data Preparation
-  echo "Step 1: Running data preparation for Object ID ${N}..."
-  python3 -u bpc/yolo/prepare_data.py --dataset_path "/workspace/bpc_phase2/train_pbr" \
-          --output_path "${OUTPUT_PATH_DATA_PREP}" --obj_id ${N} &>> "${ACTUAL_LOG_FILE}"
-  echo "Data preparation for Object ID ${N} logged."
-  echo ""
+# --- Step 2: Training ---
+# This step trains the YOLO model using the `train.py` script and the
+# prepared dataset.
+echo "Running YOLO Model Training..."
 
+# Construct training command arguments for train.py
+TRAIN_CMD_ARGS=(
+  --data_yaml_path "${YOLO_DATA_YAML_PATH_RUN}"
+  --model_variant "${MODEL_VARIANT}"
+  --epochs "${EPOCHS_FOR_RUN}"
+  --imgsz "${IMG_SIZE_RUN}"
+  --batch_size "${BATCH_SIZE_RUN}"
+  --task "detection" # Specifies that this is an object detection task
+  --project_dir "${PROJECT_DIR_RUN}"
+  --workers "${WORKERS_RUN}"
+)
 
-  # Command 2: Training
-  echo "Step 2: Running training for Object ID ${N}..."
-  # Base arguments for train.py
-  TRAIN_CMD_ARGS=(
-      --obj_id "${N}" # train.py expects the plain integer ID
-      --data_path "${DATA_PATH_TRAIN_CONFIG}"
-      --epochs "${EPOCHS_FOR_RUN}" # Use the epochs value determined at the start
-      --imgsz 1280
-      --batch 16
-      --task detection
-      --project "${PROJECT_DIR}" # Pass the determined project directory
-  )
+# If the continue_training flag is set, add the corresponding argument
+# to the training command. The `train.py` script is expected to handle
+# finding the latest checkpoint in the project directory.
+if [ "$CONTINUE_TRAINING_FLAG" = true ]; then
+  echo "Attempting to continue training (train.py will find the latest checkpoint)."
+  TRAIN_CMD_ARGS+=(--continue_training)
+fi
 
-  # Conditionally add the --continue_training flag
-  if [ "$CONTINUE_TRAINING_FLAG" = true ]; then
-    echo "Attempting to continue training for Object ID ${N} (train.py will find the latest checkpoint)."
-    TRAIN_CMD_ARGS+=(--continue_training)
-  else
-    echo "Starting new training session (or from base model) for Object ID ${N}."
-  fi
+# Execute the training command.
+# The -u flag for python3 ensures unbuffered output.
+# "${TRAIN_CMD_ARGS[@]}" expands the array into separate arguments.
+python3 -u "${TRAIN_SCRIPT}" "${TRAIN_CMD_ARGS[@]}"
 
-  # Execute the training command
-  python3 -u bpc/yolo/train.py "${TRAIN_CMD_ARGS[@]}" &>> "${ACTUAL_LOG_FILE}"
-
-  echo "Training for Object ID ${N} logged."
-  echo "=================================================="
-done
-
-
-echo ""
-echo "All iterations completed."
-echo "Check the '${LOG_DIR}' directory for individual log files."
+echo "YOLO Model Training complete."
+echo "--------------------------------------------------"
+echo "YOLO Training Pipeline Finished: $(date)"
+echo "Log file for this run: ${PIPELINE_LOG_FILE}"
