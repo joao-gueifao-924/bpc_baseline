@@ -396,7 +396,7 @@ def generate_yolo_yaml(output_path, num_classes, yolo_data_yaml_path):
 def main():
     args = None
     
-    DEBUG = True
+    DEBUG = False
     if DEBUG:
         args = SimpleNamespace()
         args.dataset_path = "/mnt/061A31701A315E3D/ipd-dataset/bpc_baseline/datasets/phase2/train_pbr"
