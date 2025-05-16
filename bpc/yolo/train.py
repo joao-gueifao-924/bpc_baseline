@@ -4,6 +4,7 @@ import torch
 import argparse
 import sys
 import shutil
+from datetime import datetime
 
 def format_experiment_base_name(model_variant, task="detection"):
     """Formats the experiment base name, e.g., train_detection_medium."""
@@ -134,10 +135,12 @@ def train_yolo_model(
     print(f"YOLO training artifacts for this run are in: {training_results.save_dir}")
     
     # Save the final model to a more structured custom path
-    custom_model_save_dir = os.path.join("bpc", "yolo", "models", task, model_variant)
-    os.makedirs(custom_model_save_dir, exist_ok=True)
+    # format timestamp as YYYYMMDD_HHMMSS
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    custom_model_save_dir = os.path.join("bpc", "yolo", "models", task, model_variant, timestamp)
+    os.makedirs(custom_model_save_dir, exist_ok=False)
     
-    final_model_filename = f"yolo11-{task}-{model_variant}-final.pt"
+    final_model_filename = f"yolo11-{task}-{model_variant}-final-{timestamp}.pt"
     final_model_path = os.path.join(custom_model_save_dir, final_model_filename)
     
     # Best model is often saved as best.pt by YOLO, but we can also save the last state
