@@ -104,7 +104,11 @@ def _process_and_save_item(image_task_meta, images_dir, labels_dir):
         return False # Item processing failure
 
     # Process images using the new function
-    composed_img_np = compose_grey_lograd_depth_image(img_gray_np, img_depth_np, depth_scale_pixel_to_mm, MAX_GRAD_ABS_VALUE)
+    #composed_img_np = compose_grey_lograd_depth_image(img_gray_np, img_depth_np, depth_scale_pixel_to_mm, MAX_GRAD_ABS_VALUE)
+
+    # TODO: I need to investigate further how to encode depth information in the image.
+    # For now, I'm just using a 3-channel image with the same gray values.
+    composed_img_np = np.stack((img_gray_np, img_gray_np, img_gray_np), axis=-1)
 
     # Generate label lines
     label_lines = []
