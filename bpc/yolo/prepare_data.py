@@ -35,6 +35,123 @@ def transform_depth_image(depth_image, depth_image_scale, max_depth_mm, backgrou
     return depth_image
 
 
+
+def hillshade(elevation, azimuth=135, altitude=45, cellsize=10):
+    azimuth_rad = np.radians(360 - azimuth + 90)
+    altitude_rad = np.radians(altitude)
+
+    # Compute the gradient
+    dy, dx = np.gradient(elevation, cellsize, cellsize)
+
+    # Slope and aspect
+    slope = np.arctan(np.hypot(dx, dy))
+    aspect = np.arctan2(-dx, dy)
+    aspect = np.where(aspect < 0, 2 * np.pi + aspect, aspect)
+
+    # Hillshade calculation
+    shaded = (np.sin(altitude_rad) * np.cos(slope) +
+              np.cos(altitude_rad) * np.sin(slope) * np.cos(azimuth_rad - aspect))
+
+    shaded = np.clip(shaded, 0, 1)
+    return (shaded * 255).astype(np.uint8)
+
+
+def apply_noise_sim2real(depth_image):
+    # Apply Gaussian noise to the depth image:
+    # depth_image is expected to be single-channel2400x2400 float32, with values in the range [0.0, 65535.0].
+
+    depth_image = depth_image.copy()
+    if len(depth_image.shape) and depth_image.shape[-1] == 3:
+        depth_image = depth_image[:,:,0] # get only one channel, they are all the same
+
+    #depth_image = depth_image.astype(np.float32)
+    #depth_image = (255.0 * (depth_image / 255.0)).astype(np.uint8)
+
+    #depth_image = cv2.medianBlur(depth_image, 3)
+    depth_image = depth_image.astype(np.float32)
+    # OpenCV cv2.medianBlur only supports uint8 images.
+    # So we need to convert the depth image to uint8, apply the median blur, and then convert back to float32.
+    #depth_image = depth_image.astype(np.uint8)
+    #depth_image = cv2.medianBlur(depth_image, 7)
+   # depth_image = depth_image.astype(np.float32)
+
+    # Emulate quantization noise:
+    L = 10
+    depth_image = np.floor(depth_image / L) * L
+
+    # Apply a Gaussian blur to the noise to make it more realistic (introduce spatial correlation)
+    noise1 = np.random.normal(0, 10, depth_image.shape).astype(np.float32)
+    #noise1 = cv2.GaussianBlur(noise1, (5, 5), 0)
+
+    noise2 = np.random.normal(0, 70, depth_image.shape).astype(np.float32)
+    noise2 = cv2.GaussianBlur(noise2, (31, 31), 0)
+
+    # Add the noise to the depth image:
+    depth_image = depth_image + noise2
+
+
+    # Apply salt and pepper noise:
+    if True:
+        salt_noise_probability = 0.02
+        pepper_noise_probability = 0.02
+        random_image = np.random.random(depth_image.shape).astype(np.float32) # uniform random noise in the range [0, 1]
+        pepper_mask = random_image < pepper_noise_probability
+        depth_image[pepper_mask] = 0        
+        salt_mask = random_image > (1 - salt_noise_probability)
+        depth_image[salt_mask] = 65535
+    
+    return depth_image
+
+
+def hillshade_depth_image(depth_image, new_width=1280, azimuth=135, is_synthetic=False):
+    """
+    depth_image is expected to be 2400x2400 uint16, with values in the range [0, 65535].
+    """
+    elevation = depth_image.copy()
+    if len(elevation.shape) and elevation.shape[-1] == 3:
+        elevation = elevation[:,:,0] # get only one channel, they are all the same
+
+    elevation = np.array(elevation).astype(np.float32)
+    
+    if is_synthetic:
+        elevation = apply_noise_sim2real(elevation)
+    else:     
+        pass
+        #elevation = cv2.bilateralFilter(elevation, 7, 255, 100) # these values were tuned empirically for 2400x2400 images
+
+    
+    hillshade_img = hillshade(elevation, azimuth=azimuth)
+        
+    # resize depth_image to 1280xR, where R is the aspect ratio of the original image:
+    h, w = hillshade_img.shape
+    aspect_ratio = w / h
+    new_height = int(new_width / aspect_ratio)
+    hillshade_img = cv2.resize(hillshade_img, (new_width, new_height), interpolation=cv2.INTER_LINEAR)
+
+    if is_synthetic:
+        hillshade_img = cv2.medianBlur(hillshade_img, 9)
+        # apply sharpening filter:
+        kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]])
+        hillshade_img = cv2.filter2D(hillshade_img, -1, kernel)
+        hillshade_img = cv2.filter2D(hillshade_img, -1, kernel)
+    
+    return hillshade_img
+
+
+def compose_grey_plus_hillshade_depth_image(img_gray_np, img_depth_np_raw_pixel_values, new_width=1280):
+
+    hillshade_img_0 = hillshade_depth_image(img_depth_np_raw_pixel_values, new_width=new_width, azimuth=0, is_synthetic=True)
+    hillshade_img_135 = hillshade_depth_image(img_depth_np_raw_pixel_values, new_width=new_width, azimuth=135, is_synthetic=True)
+
+    w,h = hillshade_img_0.shape
+    img_gray_np = cv2.resize(img_gray_np, (w,h), interpolation=cv2.INTER_LINEAR)
+
+    composed_img_np = np.stack((img_gray_np, hillshade_img_0, hillshade_img_135), axis=-1)
+    return composed_img_np
+
+
+
+
 def compose_grey_lograd_depth_image(img_gray_np, img_depth_np_raw_pixel_values, depth_scale_pixel_to_mm=0.1, max_depth_mm=5000.0):
     """
     Concatenates greyscale image with gradients of depth image into a 3-channel image.
@@ -85,15 +202,16 @@ def _process_and_save_item(image_task_meta, images_dir, labels_dir):
 
     try:
         # Load RGB and depth images, convert RGB to grayscale
-        img_rgb_pil = Image.open(rgb_img_file).convert('L') # Ensure single channel 8-bit grayscale
-        img_gray_np = np.array(img_rgb_pil)
+        img_gray_np = cv2.imread(rgb_img_file, flags=cv2.IMREAD_UNCHANGED)
         img_height, img_width = img_gray_np.shape[:2]
 
+        if len(img_gray_np.shape) == 3:
+            img_gray_np = img_gray_np[..., 0] # Convert to single channel
+
         # Load depth image as uint16 and take first channel if multi-channel
-        img_depth_pil = Image.open(depth_img_file)
-        img_depth_np = np.array(img_depth_pil, dtype=np.uint16)
-        if len(img_depth_np.shape) == 3:  # If multi-channel, take first channel
-            img_depth_np = img_depth_np[..., 0]
+        img_depth_np = cv2.imread(depth_img_file, flags=cv2.IMREAD_UNCHANGED)
+        if len(img_depth_np.shape) == 3:
+            img_depth_np = img_depth_np[..., 0] # Convert to single channel
         
         if img_depth_np.shape != (img_height, img_width):
             print(f"Failed to process {base_filename}: Depth image dimensions ({img_depth_np.shape}) mismatch RGB ({img_height, img_width}).", file=sys.stderr)
@@ -103,12 +221,8 @@ def _process_and_save_item(image_task_meta, images_dir, labels_dir):
         print(f"Error processing image files for {base_filename}: {e}", file=sys.stderr)
         return False # Item processing failure
 
-    # Process images using the new function
-    #composed_img_np = compose_grey_lograd_depth_image(img_gray_np, img_depth_np, depth_scale_pixel_to_mm, MAX_GRAD_ABS_VALUE)
+    composed_img_np = compose_grey_plus_hillshade_depth_image(img_gray_np, img_depth_np, new_width=1280)
 
-    # TODO: I need to investigate further how to encode depth information in the image.
-    # For now, I'm just using a 3-channel image with the same gray values.
-    composed_img_np = np.stack((img_gray_np, img_gray_np, img_gray_np), axis=-1)
 
     # Generate label lines
     label_lines = []
@@ -417,7 +531,7 @@ def generate_yolo_yaml(output_path, num_classes, yolo_data_yaml_path):
 def main():
     args = None
     
-    DEBUG = False
+    DEBUG = True
     if DEBUG:
         args = SimpleNamespace()
         args.dataset_path = "/mnt/061A31701A315E3D/ipd-dataset/bpc_baseline/datasets/phase2/train_pbr"
