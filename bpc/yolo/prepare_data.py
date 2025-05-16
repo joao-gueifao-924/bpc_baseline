@@ -404,11 +404,7 @@ def generate_yolo_yaml(output_path, num_classes, yolo_data_yaml_path):
     }
 
     with open(yolo_data_yaml_path, "w") as f:
-        for key, value in yaml_content.items():
-            if isinstance(value, list):
-                f.write(f"{key}: {value}\n") # For lists like names
-            else:
-                f.write(f"{key}: '{value}'\n") # Quote paths
+        yaml.dump(yaml_content, f, sort_keys=False) # Use yaml.dump for robust YAML generation
 
     print(f"[INFO] YOLO YAML file generated at: {yolo_data_yaml_path}")
     return yolo_data_yaml_path
