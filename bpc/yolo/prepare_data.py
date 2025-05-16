@@ -35,6 +35,40 @@ def transform_depth_image(depth_image, depth_image_scale, max_depth_mm, backgrou
     return depth_image
 
 
+def compose_grey_lograd_depth_image(img_gray_np, img_depth_np_raw_pixel_values, depth_scale_pixel_to_mm=0.1, max_depth_mm=5000.0):
+    """
+    Concatenates greyscale image with gradients of depth image into a 3-channel image.
+    lograd stands for log-gradient operation.
+    Processes depth image with Sobel gradients and compresses them to 0-255 range for 0-500 mm range,
+    using log-compression with clipping so that they can be written to disk and fed to YOLO model as 8-bit PNG images.
+    The log-compression is done with floor(41.0 * log(x + 1)) to map 0-500 mm to 0-255 range.
+
+    Args:
+        img_gray_np: Grayscale image as numpy array
+        img_depth_np_raw_pixel_values: Raw depth image as numpy array
+        depth_scale_pixel_to_mm: Scale factor to convert depth pixels to mm
+        max_depth_mm: Maximum depth value in mm
+        
+    Returns:
+        3-channel numpy array with (Grayscale, f(SobelX), f(SobelY)) channels. where f(x) = floor(41.0 * log(x + 1))
+    """
+    # Transform depth image
+    img_depth_np = transform_depth_image(img_depth_np_raw_pixel_values, depth_image_scale=depth_scale_pixel_to_mm, max_depth_mm=max_depth_mm)
+
+    # Calculate Sobel gradients on depth image
+    sobel_x = cv2.Sobel(img_depth_np, cv2.CV_64F, 1, 0, ksize=3)
+    sobel_y = cv2.Sobel(img_depth_np, cv2.CV_64F, 0, 1, ksize=3)
+
+    # Compress Sobel gradients to 0-255 range for 0-500 mm range, with clipping
+    sobel_x_compressed = np.floor(41.0 * np.log(sobel_x + 1))
+    sobel_y_compressed = np.floor(41.0 * np.log(sobel_y + 1))
+    sobel_x_clipped = np.clip(sobel_x_compressed, 0, 255).astype(np.uint8)                
+    sobel_y_clipped = np.clip(sobel_y_compressed, 0, 255).astype(np.uint8)
+
+    # Stack to create 3-channel image: (Grayscale, SobelX, SobelY)
+    return np.stack((img_gray_np, sobel_x_clipped, sobel_y_clipped), axis=-1)
+
+
 def _process_and_save_item(image_task_meta, images_dir, labels_dir):
     """
     Loads, processes, and saves a single image and its corresponding label file.
@@ -69,21 +103,8 @@ def _process_and_save_item(image_task_meta, images_dir, labels_dir):
         print(f"Error processing image files for {base_filename}: {e}", file=sys.stderr)
         return False # Item processing failure
 
-    # Transform depth image
-    img_depth_np = transform_depth_image(img_depth_np, depth_image_scale=depth_scale_pixel_to_mm, max_depth_mm=MAX_GRAD_ABS_VALUE)
-
-    # Calculate Sobel gradients on depth image
-    sobel_x = cv2.Sobel(img_depth_np, cv2.CV_64F, 1, 0, ksize=3)
-    sobel_y = cv2.Sobel(img_depth_np, cv2.CV_64F, 0, 1, ksize=3)
-
-    # Normalize Sobel gradients to 0-255 range using fixed scaling
-    sobel_x_scaled = (sobel_x / MAX_GRAD_ABS_VALUE) * 255.0
-    sobel_y_scaled = (sobel_y / MAX_GRAD_ABS_VALUE) * 255.0
-    sobel_x_norm = np.clip(sobel_x_scaled, 0, 255).astype(np.uint8)                
-    sobel_y_norm = np.clip(sobel_y_scaled, 0, 255).astype(np.uint8)
-
-    # Stack to create 3-channel image: (Grayscale, SobelX, SobelY)
-    composed_img_np = np.stack((img_gray_np, sobel_x_norm, sobel_y_norm), axis=-1)
+    # Process images using the new function
+    composed_img_np = compose_grey_lograd_depth_image(img_gray_np, img_depth_np, depth_scale_pixel_to_mm, MAX_GRAD_ABS_VALUE)
 
     # Generate label lines
     label_lines = []
