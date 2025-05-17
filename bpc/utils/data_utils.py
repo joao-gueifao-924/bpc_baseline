@@ -526,6 +526,7 @@ def hillshade_depth_image(depth_image, new_width=1280, azimuth=135, is_synthetic
     hillshade_img = cv2.resize(hillshade_img, (new_width, new_height), interpolation=cv2.INTER_LINEAR)
 
     if is_synthetic:
+        # the following filters were tuned empirically for 1280x1280 images
         hillshade_img = cv2.medianBlur(hillshade_img, 9)
         # apply sharpening filter:
         kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]])
@@ -535,12 +536,16 @@ def hillshade_depth_image(depth_image, new_width=1280, azimuth=135, is_synthetic
     return hillshade_img
 
 
-def compose_grey_plus_hillshade_depth_image(img_gray_np, img_depth_np_raw_pixel_values, new_width=1280):
+def compose_grey_plus_hillshade_depth_image(img_gray_np, img_depth_np_raw_pixel_values, new_width=1280, is_synthetic=False):
 
-    hillshade_img_0 = hillshade_depth_image(img_depth_np_raw_pixel_values, new_width=new_width, azimuth=0, is_synthetic=True)
-    hillshade_img_135 = hillshade_depth_image(img_depth_np_raw_pixel_values, new_width=new_width, azimuth=135, is_synthetic=True)
+    hillshade_img_0 = hillshade_depth_image(img_depth_np_raw_pixel_values, new_width=new_width, azimuth=0, is_synthetic=is_synthetic)
+    hillshade_img_135 = hillshade_depth_image(img_depth_np_raw_pixel_values, new_width=new_width, azimuth=135, is_synthetic=is_synthetic)
 
     w,h = hillshade_img_0.shape
+
+    if len(img_gray_np.shape) and img_gray_np.shape[-1] == 3:
+        img_gray_np = img_gray_np[:,:,0] # get only one channel, they are all the same
+
     img_gray_np = cv2.resize(img_gray_np, (w,h), interpolation=cv2.INTER_LINEAR)
 
     composed_img_np = np.stack((img_gray_np, hillshade_img_0, hillshade_img_135), axis=-1)

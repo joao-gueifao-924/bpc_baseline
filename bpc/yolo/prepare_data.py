@@ -82,13 +82,7 @@ def _process_and_save_item(image_task_meta, images_dir, labels_dir):
 
     # Save composed image
     try:
-        # Reorder channels for OpenCV: (Gray, SobelX, SobelY) -> (SobelY, SobelX, Gray)
-        # Gray is composed_img_np[..., 0]
-        # SobelX is composed_img_np[..., 1]
-        # SobelY is composed_img_np[..., 2]
-        # OpenCV expects BGR, so B=SobelY, G=SobelX, R=Gray
-        composed_img_bgr = composed_img_np[..., ::-1] # Reverses the last dimension (channels)
-        cv2.imwrite(out_image_path, composed_img_bgr)
+        cv2.imwrite(out_image_path, composed_img_np)
     except Exception as e:
         print(f"Error saving image {out_image_path}: {e}", file=sys.stderr)
         return False # Item processing failure
