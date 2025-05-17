@@ -136,7 +136,7 @@ def train_yolo_model(
     
     # Save the final model to a more structured custom path
     # format timestamp as YYYYMMDD_HHMMSS
-    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     custom_model_save_dir = os.path.join("bpc", "yolo", "models", task, model_variant, timestamp)
     os.makedirs(custom_model_save_dir, exist_ok=False)
     
