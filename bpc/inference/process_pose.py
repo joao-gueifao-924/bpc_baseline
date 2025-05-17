@@ -22,7 +22,7 @@ from bpc.pose.models.losses import (
 from bpc.pose.models.simple_pose_net import SimplePoseNet
 from bpc.utils.data_utils import letterbox_preserving_aspect_ratio, calc_pose_matrix
 from bpc.inference.epipolar_matching import compute_cost_matrix, match_objects, triangulate_multi_view
-from bpc.inference.yolo_detection import detect_with_yolo  # if used elsewhere
+#from bpc.inference.yolo_detection import detect_with_yolo  # if used elsewhere
 from bpc.inference.utils.camera_utils import load_camera_params, compute_fundamental_matrix
 
 # -----------------------------------------------------------------------------
@@ -80,6 +80,7 @@ class PosePrediction:
     def __init__(self, detections, capture):
         self.boxes = np.array([x['bbox'] for x in detections])
         self.centroids = np.array([x['bb_center'] for x in detections])
+        self.confidences = np.array([x['confidence'] for x in detections])
         self.capture = capture
         self.t = self.triangulate()
         
@@ -102,24 +103,25 @@ class PoseEstimator:
         from ultralytics import YOLO
         self.yolo = YOLO(params.yolo_model_path).cuda()
         
-        # Load pose model and determine rotation mode (auto-detect if not provided)
-        self.pose_model, self.rotation_mode = load_pose_model(
-            pose_model_path=params.pose_model_path,
-            device='cuda:0',
-            rotation_mode=params.rotation_mode
-        )
-        print(f"Using rotation mode: {self.rotation_mode}")
+        if False: # disabling pose estimator from baseline solution, we don't use it
+            # Load pose model and determine rotation mode (auto-detect if not provided)
+            self.pose_model, self.rotation_mode = load_pose_model(
+                pose_model_path=params.pose_model_path,
+                device='cuda:0',
+                rotation_mode=params.rotation_mode
+            )
+            print(f"Using rotation mode: {self.rotation_mode}")
 
     def _detect(self, capture):
         """
         Run YOLO on each image in the capture.
         Returns a dictionary mapping camera indices to a list of detections.
-        Each detection is a dictionary with keys "bbox" and "bb_center".
+        Each detection is a dictionary with keys "bbox", "bb_center", "confidence".
         """
         camera_predictions = {}
         for idx, image in enumerate(capture.images):
-            print(f"Processing image shape: {image.shape}")
-            results = self.yolo(image, imgsz=1280)[0]
+            #print(f"Processing image shape: {image.shape}")
+            results = self.yolo(image, imgsz=1280, verbose=True)[0]
             boxes = results.boxes.xyxy.cpu().numpy()
             confs = results.boxes.conf.cpu().numpy()
             clss  = results.boxes.cls.cpu().numpy()
@@ -129,14 +131,16 @@ class PoseEstimator:
             # Keep only detections with class==0 and conf>=threshold.
             valid = (clss == 0) & (confs >= self.params.yolo_conf_thresh)
             boxes = boxes[valid]
+            confidences = confs[valid]
             preds_cam = []
-            for box in boxes:
+            for box, confidence in zip(boxes, confidences):
                 x1, y1, x2, y2 = map(int, box)
                 cx = 0.5 * (x1 + x2)
                 cy = 0.5 * (y1 + y2)
                 preds_cam.append({
                     'bbox': (x1, y1, x2, y2),
                     'bb_center': (cx, cy),
+                    'confidence': confidence
                 })
             camera_predictions[idx] = preds_cam
         return camera_predictions

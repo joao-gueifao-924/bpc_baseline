@@ -14,7 +14,7 @@ from bpc.inference.utils.camera_utils import load_camera_params
 
 # Make sure to set the OpenGL platform before importing pyrender.
 os.environ["PYOPENGL_PLATFORM"] = "egl"
-import pyrender
+#import pyrender
 
 
 def compute_2d_center(K, R_mat, t):
@@ -388,8 +388,9 @@ def calc_pose_matrix(R_mat, t):
 
 
 class Capture:
-    def __init__(self, images, Ks, RTs, obj_id, gt_poses=None):
+    def __init__(self, images, depths, Ks, RTs, obj_id, gt_poses=None):
         self.images = images
+        self.depths = depths
         self.Ks = Ks
         self.RTs = RTs
         print(gt_poses)
@@ -404,6 +405,11 @@ class Capture:
         Ts = [cam_params[x]['t'][image_id] for x in cam_ids]
         RTs = [calc_pose_matrix(r, t) for r, t in zip(Rs, Ts)]
         image_paths = [glob.glob(os.path.join(scene_dir, f"rgb_{cam_id}", f"{image_id:06d}.*g"))[0] for cam_id in cam_ids]
+        depth_paths = [glob.glob(os.path.join(scene_dir, f"depth_{cam_id}", f"{image_id:06d}.*g"))[0] for cam_id in cam_ids]
         images = [cv2.imread(x) for x in image_paths]
+        depths = []
+        for x in depth_paths:
+            this_depth = cv2.imread(x, cv2.IMREAD_UNCHANGED)
+            depths.append(this_depth)
         gt_poses = load_gt_poses(scene_dir, '', cam_ids, image_id, obj_id)
-        return cls(images, Ks, RTs, obj_id, gt_poses)
+        return cls(images, depths, Ks, RTs, obj_id, gt_poses)

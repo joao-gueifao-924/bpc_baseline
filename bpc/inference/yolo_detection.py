@@ -34,7 +34,12 @@ def detect_with_yolo(scene_dir, cam_ids, image_id, yolo_model_path):
             x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
             cx = 0.5 * (x1 + x2)
             cy = 0.5 * (y1 + y2)
-            det_cam.append({"bbox": (x1, y1, x2, y2), "bb_center": (cx, cy)})
+            conf = float(box.conf[0].cpu().numpy())
+            det_cam.append({
+                "bbox": (x1, y1, x2, y2),
+                "bb_center": (cx, cy),
+                "confidence": conf
+            })
 
         detections[cam_id] = det_cam
     return detections
