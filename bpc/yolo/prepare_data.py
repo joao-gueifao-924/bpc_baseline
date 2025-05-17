@@ -1,4 +1,15 @@
+import sys
 import os
+
+# Add the project root directory to the Python path
+# __file__ is bpc/yolo/prepare_data.py
+# os.path.dirname(__file__) is bpc/yolo
+# os.path.join(os.path.dirname(__file__), '..') is bpc/
+# os.path.join(os.path.dirname(__file__), '..', '..') is bpc_baseline/ (the project root)
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
 import json
 import shutil
 import argparse
@@ -8,183 +19,13 @@ from PIL import Image
 import random
 import numpy as np
 import cv2
-import sys
 import yaml
 from glob import glob
 from pathlib import Path
 from sklearn.model_selection import train_test_split
 import multiprocessing
 from multiprocessing import cpu_count
-
-# Global constant for depth processing
-MAX_GRAD_ABS_VALUE = 5000.0  # mm
-
-def transform_depth_image(depth_image, depth_image_scale, max_depth_mm, background_factor=1.1):
-    depth_image = depth_image.copy()
-    if len(depth_image.shape) and depth_image.shape[-1] == 3:
-        depth_image = depth_image[:,:,0] # get only one channel, they are all the same
-
-    depth_image = depth_image.astype(np.float32) * depth_image_scale
-
-    # In the PBR training data, many times background depth is 0.0, but we want to map it to be behind the target objects.
-    # That's why we are mapping anything below 10 mm or above 5 meters to the maximum original depth value plus some margin.
-    depth_image[(depth_image < 10) & (depth_image > max_depth_mm)] = 0 # anything below 10 mm or above 5 meters gets mapped to zero
-    depth_image_max_distance = np.max(depth_image)
-    depth_image[depth_image == 0] = depth_image_max_distance * background_factor
-    
-    return depth_image
-
-
-
-def hillshade(elevation, azimuth=135, altitude=45, cellsize=10):
-    azimuth_rad = np.radians(360 - azimuth + 90)
-    altitude_rad = np.radians(altitude)
-
-    # Compute the gradient
-    dy, dx = np.gradient(elevation, cellsize, cellsize)
-
-    # Slope and aspect
-    slope = np.arctan(np.hypot(dx, dy))
-    aspect = np.arctan2(-dx, dy)
-    aspect = np.where(aspect < 0, 2 * np.pi + aspect, aspect)
-
-    # Hillshade calculation
-    shaded = (np.sin(altitude_rad) * np.cos(slope) +
-              np.cos(altitude_rad) * np.sin(slope) * np.cos(azimuth_rad - aspect))
-
-    shaded = np.clip(shaded, 0, 1)
-    return (shaded * 255).astype(np.uint8)
-
-
-def apply_noise_sim2real(depth_image):
-    # Apply Gaussian noise to the depth image:
-    # depth_image is expected to be single-channel2400x2400 float32, with values in the range [0.0, 65535.0].
-
-    depth_image = depth_image.copy()
-    if len(depth_image.shape) and depth_image.shape[-1] == 3:
-        depth_image = depth_image[:,:,0] # get only one channel, they are all the same
-
-    #depth_image = depth_image.astype(np.float32)
-    #depth_image = (255.0 * (depth_image / 255.0)).astype(np.uint8)
-
-    #depth_image = cv2.medianBlur(depth_image, 3)
-    depth_image = depth_image.astype(np.float32)
-    # OpenCV cv2.medianBlur only supports uint8 images.
-    # So we need to convert the depth image to uint8, apply the median blur, and then convert back to float32.
-    #depth_image = depth_image.astype(np.uint8)
-    #depth_image = cv2.medianBlur(depth_image, 7)
-   # depth_image = depth_image.astype(np.float32)
-
-    # Emulate quantization noise:
-    L = 10
-    depth_image = np.floor(depth_image / L) * L
-
-    # Apply a Gaussian blur to the noise to make it more realistic (introduce spatial correlation)
-    noise1 = np.random.normal(0, 10, depth_image.shape).astype(np.float32)
-    #noise1 = cv2.GaussianBlur(noise1, (5, 5), 0)
-
-    noise2 = np.random.normal(0, 70, depth_image.shape).astype(np.float32)
-    noise2 = cv2.GaussianBlur(noise2, (31, 31), 0)
-
-    # Add the noise to the depth image:
-    depth_image = depth_image + noise2
-
-
-    # Apply salt and pepper noise:
-    if True:
-        salt_noise_probability = 0.02
-        pepper_noise_probability = 0.02
-        random_image = np.random.random(depth_image.shape).astype(np.float32) # uniform random noise in the range [0, 1]
-        pepper_mask = random_image < pepper_noise_probability
-        depth_image[pepper_mask] = 0        
-        salt_mask = random_image > (1 - salt_noise_probability)
-        depth_image[salt_mask] = 65535
-    
-    return depth_image
-
-
-def hillshade_depth_image(depth_image, new_width=1280, azimuth=135, is_synthetic=False):
-    """
-    depth_image is expected to be 2400x2400 uint16, with values in the range [0, 65535].
-    """
-    elevation = depth_image.copy()
-    if len(elevation.shape) and elevation.shape[-1] == 3:
-        elevation = elevation[:,:,0] # get only one channel, they are all the same
-
-    elevation = np.array(elevation).astype(np.float32)
-    
-    if is_synthetic:
-        elevation = apply_noise_sim2real(elevation)
-    else:     
-        pass
-        #elevation = cv2.bilateralFilter(elevation, 7, 255, 100) # these values were tuned empirically for 2400x2400 images
-
-    
-    hillshade_img = hillshade(elevation, azimuth=azimuth)
-        
-    # resize depth_image to 1280xR, where R is the aspect ratio of the original image:
-    h, w = hillshade_img.shape
-    aspect_ratio = w / h
-    new_height = int(new_width / aspect_ratio)
-    hillshade_img = cv2.resize(hillshade_img, (new_width, new_height), interpolation=cv2.INTER_LINEAR)
-
-    if is_synthetic:
-        hillshade_img = cv2.medianBlur(hillshade_img, 9)
-        # apply sharpening filter:
-        kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]])
-        hillshade_img = cv2.filter2D(hillshade_img, -1, kernel)
-        hillshade_img = cv2.filter2D(hillshade_img, -1, kernel)
-    
-    return hillshade_img
-
-
-def compose_grey_plus_hillshade_depth_image(img_gray_np, img_depth_np_raw_pixel_values, new_width=1280):
-
-    hillshade_img_0 = hillshade_depth_image(img_depth_np_raw_pixel_values, new_width=new_width, azimuth=0, is_synthetic=True)
-    hillshade_img_135 = hillshade_depth_image(img_depth_np_raw_pixel_values, new_width=new_width, azimuth=135, is_synthetic=True)
-
-    w,h = hillshade_img_0.shape
-    img_gray_np = cv2.resize(img_gray_np, (w,h), interpolation=cv2.INTER_LINEAR)
-
-    composed_img_np = np.stack((img_gray_np, hillshade_img_0, hillshade_img_135), axis=-1)
-    return composed_img_np
-
-
-
-
-def compose_grey_lograd_depth_image(img_gray_np, img_depth_np_raw_pixel_values, depth_scale_pixel_to_mm=0.1, max_depth_mm=5000.0):
-    """
-    Concatenates greyscale image with gradients of depth image into a 3-channel image.
-    lograd stands for log-gradient operation.
-    Processes depth image with Sobel gradients and compresses them to 0-255 range for 0-500 mm range,
-    using log-compression with clipping so that they can be written to disk and fed to YOLO model as 8-bit PNG images.
-    The log-compression is done with floor(41.0 * log(x + 1)) to map 0-500 mm to 0-255 range.
-
-    Args:
-        img_gray_np: Grayscale image as numpy array
-        img_depth_np_raw_pixel_values: Raw depth image as numpy array
-        depth_scale_pixel_to_mm: Scale factor to convert depth pixels to mm
-        max_depth_mm: Maximum depth value in mm
-        
-    Returns:
-        3-channel numpy array with (Grayscale, f(SobelX), f(SobelY)) channels. where f(x) = floor(41.0 * log(x + 1))
-    """
-    # Transform depth image
-    img_depth_np = transform_depth_image(img_depth_np_raw_pixel_values, depth_image_scale=depth_scale_pixel_to_mm, max_depth_mm=max_depth_mm)
-
-    # Calculate Sobel gradients on depth image
-    sobel_x = cv2.Sobel(img_depth_np, cv2.CV_64F, 1, 0, ksize=3)
-    sobel_y = cv2.Sobel(img_depth_np, cv2.CV_64F, 0, 1, ksize=3)
-
-    # Compress Sobel gradients to 0-255 range for 0-500 mm range, with clipping
-    sobel_x_compressed = np.floor(41.0 * np.log(sobel_x + 1))
-    sobel_y_compressed = np.floor(41.0 * np.log(sobel_y + 1))
-    sobel_x_clipped = np.clip(sobel_x_compressed, 0, 255).astype(np.uint8)                
-    sobel_y_clipped = np.clip(sobel_y_compressed, 0, 255).astype(np.uint8)
-
-    # Stack to create 3-channel image: (Grayscale, SobelX, SobelY)
-    return np.stack((img_gray_np, sobel_x_clipped, sobel_y_clipped), axis=-1)
-
+from bpc.utils.data_utils import compose_grey_plus_hillshade_depth_image
 
 def _process_and_save_item(image_task_meta, images_dir, labels_dir):
     """
