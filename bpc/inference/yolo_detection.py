@@ -282,7 +282,7 @@ class ObjectDetector:
         self.yolo_detector = YOLODetector(yolo_model_path, yolo_detection_thresholds_path)
         self.is_synthetic = is_synthetic
 
-    def detect(self, greyscale_image, depth_image_raw_values):
+    def detect(self, greyscale_image, depth_image_raw_values, xrange=None):
         """
         Detect objects in an image.
         """
@@ -290,9 +290,11 @@ class ObjectDetector:
         # Infer for all object IDs at once, then apply inter-class filtering:
         detections_all_obj_ids = {}
 
-        yolo_input = du.compose_grey_plus_hillshade_depth_image(greyscale_image, depth_image_raw_values, 
-                                                        new_width=self.yolo_detector.image_size, 
-                                                        is_synthetic=self.is_synthetic)
+        yolo_input = du.compose_grey_plus_hillshade_depth_image(greyscale_image, 
+                                                                depth_image_raw_values, 
+                                                                xrange,
+                                                                new_width=self.yolo_detector.image_size, 
+                                                                is_synthetic=self.is_synthetic)
 
         # I accidentally inverted the order of channels when running the data preparation pipeline (prepare_data.py)
         # and now my YOLO model must be fed with the channels reversed as well!     (-__-)'
