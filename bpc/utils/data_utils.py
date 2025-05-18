@@ -416,10 +416,17 @@ class Capture:
 
 
 
-def transform_depth_image(depth_image, depth_image_scale, max_depth_mm, background_factor=1.1):
+def transform_depth_image(depth_image, depth_image_scale, max_depth_mm, background_factor=1.1, new_width=None):
     depth_image = depth_image.copy()
     if len(depth_image.shape) and depth_image.shape[-1] == 3:
         depth_image = depth_image[:,:,0] # get only one channel, they are all the same
+
+    if new_width is not None:
+        # resize depth_image to (new_width x R), where R is the aspect ratio of the original image:
+        h, w = depth_image.shape
+        aspect_ratio = w / h
+        new_height = int(new_width / aspect_ratio)
+        depth_image = cv2.resize(depth_image, (new_width, new_height), interpolation=cv2.INTER_LINEAR)
 
     depth_image = depth_image.astype(np.float32) * depth_image_scale
 
@@ -587,3 +594,118 @@ def compose_grey_lograd_depth_image(img_gray_np, img_depth_np_raw_pixel_values, 
     # Stack to create 3-channel image: (Grayscale, SobelX, SobelY)
     return np.stack((img_gray_np, sobel_x_clipped, sobel_y_clipped), axis=-1)
 
+
+def apply_image_transformations(image, apply_affine_transformations=False, apply_clahe=True, apply_negative=True, apply_contrast_gamma_correction=True, apply_pixel_noise=True):
+    # Apply distortions to the image:
+    # Flip horizontally and vertically:
+    # image = cv2.flip(image, -1)
+
+    # Apply CLAHE contrast and brightness:
+    if apply_clahe:  # Apply CLAHE:
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(24, 24))
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2YCrCb)
+        y_channel = image[:, :, 0]
+        y_channel = clahe.apply(y_channel)
+        image[:, :, 0] = y_channel
+        image = cv2.cvtColor(image, cv2.COLOR_YCrCb2BGR)
+        # Apply brightness:
+        alpha = 1.5
+        beta = 0.0
+        image = cv2.convertScaleAbs(image, alpha=alpha, beta=beta)
+        image = np.clip(image, 0, 255).astype(np.uint8)
+        # Apply brightness and contrast:
+        alpha = 0.5
+        beta = 0.0
+        image = cv2.convertScaleAbs(image, alpha=alpha, beta=beta)
+        image = np.clip(image, 0, 255).astype(np.uint8)
+
+    if apply_negative:  # Apply negative:
+        image = cv2.bitwise_not(image)
+
+    if apply_contrast_gamma_correction:  # Apply Contrast gamma correction:
+        alpha = 0.8
+        beta = -0.3
+        gamma = 3.0
+
+        invGamma = 1.0 / gamma
+        table = np.array(
+            [(alpha * ((i / 255.0) ** invGamma) + beta) * 255 for i in range(256)]
+        )
+        table = np.clip(table, 0, 255).astype(np.uint8)
+        image = cv2.LUT(image, table)
+        image = np.clip(image, 0, 255).astype(np.uint8)
+
+    if apply_pixel_noise:  # Apply pixel noise:
+        # Apply Gaussian blur:
+        image = cv2.GaussianBlur(image, (5, 5), 0)
+        # Apply Gaussian noise:
+        noise = (255.0 * np.random.normal(0, 0.4, image.shape[:2]) - 200)
+        noise = np.clip(noise, 0, 255).astype(np.uint8)
+        noise = cv2.GaussianBlur(noise, (3, 3), 0)
+        noise = cv2.cvtColor(noise, cv2.COLOR_GRAY2BGR)
+        image = cv2.add(image, noise)
+
+    if apply_affine_transformations:
+        shear, scale = 0, 1.2
+        angle, tx, ty = 30, 300, 300
+
+        # Define the center of the image
+        center = (image.shape[1] // 2, image.shape[0] // 2)
+
+        # Create the transformation matrix
+        M = np.eye(3)
+
+        # Rotation & scale
+        rotation_matrix = cv2.getRotationMatrix2D(center, angle, scale)
+        M[:2, :3] = rotation_matrix
+
+        # Translation
+        M[0, 2] += tx
+        M[1, 2] += ty
+
+        # Shearing
+        shear_matrix = np.float32([[1, shear, 0], [0, 1, 0]])
+        M = np.dot(np.vstack((shear_matrix, [0, 0, 1])), M)
+
+        # Apply the unified transformation
+        image = cv2.warpAffine(image, M[:2, :3], (image.shape[1], image.shape[0]))
+
+    return image
+
+def get_color_pallete():
+    # Generate color pallete, to be indexed by object ID:
+    colors = [
+        (255, 0, 0),     # Red
+        (0, 255, 0),     # Green
+        (0, 0, 255),     # Blue
+        (255, 255, 0),   # Yellow
+        (255, 0, 255),   # Magenta
+        (0, 255, 255),   # Cyan
+        (192, 192, 192), # Silver
+        (128, 0, 0),     # Maroon
+        (128, 128, 0),   # Olive
+        (128, 0, 128),   # Purple
+        (255, 165, 0),   # Orange
+        (0, 128, 128),   # Teal
+        (255, 192, 203), # Pink
+        (128, 128, 128), # Gray
+        (0, 0, 0),       # Black
+        (255, 255, 255), # White
+        (0, 128, 0),     # Dark Green
+        (0, 0, 128),     # Navy
+        (128, 128, 255), # Light Blue
+        (255, 128, 0),   # Coral
+        (255, 128, 128), # Light Coral
+        (128, 255, 128)  # Light Green
+    ]
+    return colors
+
+
+def get_color_for_class_id(class_id, color_pallete=None, as_bgr=False):
+    if color_pallete is None:
+        color_pallete = get_color_pallete()
+    color = color_pallete[class_id % len(color_pallete)]
+    if as_bgr:
+        return color[::-1]
+    else:
+        return color
