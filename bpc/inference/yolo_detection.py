@@ -3,7 +3,9 @@ import os
 from ultralytics import YOLO
 import numpy as np
 from bpc.utils.data_utils import extract_roi_with_padding
-
+import bpc.utils.data_utils as du
+import bpc.inference.yolo_detection_filtering as ydf
+import json
 
 class YOLODetector:
     """
@@ -12,11 +14,17 @@ class YOLODetector:
     This class wraps a YOLO detection model and provides methods to detect objects in images.
     It uses the YOLOv11 model from the ultralytics package.
     """
-    def __init__(self, yolo_model_path, obj_id=None):
+    def __init__(self, yolo_model_path, yolo_detection_thresholds_path=None, obj_id=None):
         self.obj_id = obj_id # should be None for multi-class detector
         self.yolo = YOLO(yolo_model_path).cuda()
-        self.yolo_confidence_thresh = 0.1
+        self.yolo_confidence_thresh = 0.01
         self.image_size = 1280 # keep it as 1280, to be consistent with the YOLO model input size defined during training
+        self.yolo_detection_thresholds = None
+
+        if yolo_detection_thresholds_path is not None:
+            with open(yolo_detection_thresholds_path, 'r') as f:
+                str_keys_dict = json.load(f)
+                self.yolo_detection_thresholds = {int(k): v for k, v in str_keys_dict.items()}
 
     def detect(self, image, single_class_detector=False, rescale_factor=1.0):
         """
@@ -39,8 +47,9 @@ class YOLODetector:
 
         boxes = boxes[valid]
         confidences = confidences[valid]
-        class_ids = class_ids[valid]
-        detections = []
+        class_ids = [int(x) for x in class_ids[valid]]
+        
+        detections_by_class_id = {}
 
         should_rescale_output = np.abs(rescale_factor - 1.0) > 1e-6
 
@@ -51,22 +60,30 @@ class YOLODetector:
                 y1 = int(y1 * rescale_factor) 
                 x2 = int(x2 * rescale_factor)
                 y2 = int(y2 * rescale_factor)
-        
-
             cx = 0.5 * (x1 + x2)
             cy = 0.5 * (y1 + y2)
-            detections.append({
+            
+            if self.yolo_detection_thresholds is not None:
+                if confidence < self.yolo_detection_thresholds[class_id]:
+                    continue
+
+            if class_id not in detections_by_class_id:
+                detections_by_class_id[class_id] = []
+            
+            detections_by_class_id[class_id].append({
                 'bbox': (x1, y1, x2, y2),
                 'bb_center': (cx, cy),
                 'confidence': confidence,
                 'class_id': class_id,
                 'class_name': class_names[class_id]
             })
-        return detections
+
+        return detections_by_class_id
 
 
 # TODO Fix YOLODetectorOrientedBoundingBox regarding subclassing from YOLODetector, and the coordinates of the bounding boxes mapping 
 # to the original image, which is not correct.
+# For now, keep it disabled.
 if False:
     # This class is not used, but it is a good example of how to subclass the YOLODetector class to create a new detector.
     # It is not used because it is not working correctly, and it is not needed for the current task.
@@ -254,6 +271,42 @@ if False:
 
             return final_detections_list
 
+
+class ObjectDetector:
+    """
+    Object detector, detections are upright bounding boxes with associated confidence.
+
+    This class wraps a multi-class YOLO detection model and provides methods to detect objects in images.
+    """
+    def __init__(self, yolo_model_path, yolo_detection_thresholds_path, is_synthetic=False):
+        self.yolo_detector = YOLODetector(yolo_model_path, yolo_detection_thresholds_path)
+        self.is_synthetic = is_synthetic
+
+    def detect(self, greyscale_image, depth_image_raw_values):
+        """
+        Detect objects in an image.
+        """
+
+        # Infer for all object IDs at once, then apply inter-class filtering:
+        detections_all_obj_ids = {}
+
+        yolo_input = du.compose_grey_plus_hillshade_depth_image(greyscale_image, depth_image_raw_values, 
+                                                        new_width=self.yolo_detector.image_size, 
+                                                        is_synthetic=self.is_synthetic)
+
+        # I accidentally inverted the order of channels when running the data preparation pipeline (prepare_data.py)
+        # and now my YOLO model must be fed with the channels reversed as well!     (-__-)'
+        yolo_input = cv2.cvtColor(yolo_input, cv2.COLOR_RGB2BGR)
+
+        max_original_image_side = np.max(greyscale_image.shape)
+        rescale_factor = max_original_image_side / self.yolo_detector.image_size
+        all_detections_by_class_id = self.yolo_detector.detect(yolo_input, rescale_factor=rescale_factor)
+        
+        # For phase 2 of the BPC challenge, given how the YOLO multi-class model was trained, each class ID maps to Object ID by same index value.
+        # This is not true for phase 1, where we would need to define a mapping between class ID and corresponding object ID/type
+        all_detections_by_obj_id = all_detections_by_class_id # Coding Agent, do keep this to warn user about mapping in the future!!
+
+        return all_detections_by_obj_id
 
 
 def detect_with_yolo(scene_dir, cam_ids, image_id, yolo_model_path):

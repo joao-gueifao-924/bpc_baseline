@@ -269,13 +269,18 @@ def is_object_detection_correct_given_metric_size(detection, depth_image, camera
     depth_values = depth_image[depth_mask]
     depth_values = depth_values[:].copy()
 
+    avg_depth_ok = False
+
     # Compute the mean within 25% quartile of the pixels within the mask:
     # The lower quartile corresponds to the 25% closest pixels to the camera
     if len(depth_values) > 0:
         q25_depth = np.percentile(depth_values, 25)
-        depth_values = depth_values[depth_values <= q25_depth]
-        avg_depth = np.mean(depth_values)
-    else:
+        depth_values_25_percentile = depth_values[depth_values <= q25_depth]
+        avg_depth = np.mean(depth_values_25_percentile)
+        if avg_depth > 10: # mm, to avoid division by zero, also tests for NaN
+            avg_depth_ok = True
+    
+    if not avg_depth_ok:
         # Fail gracefully, there is some issue with the depth image or provided mask
         # Don't make this object detection become later rejected because of this.
         return True
@@ -329,7 +334,7 @@ def get_camera_fov(image, camera_intrinsics_K, out_degrees=True):
 
     return fov_x, fov_y
 
-def filter_detections_by_appearance_and_metric_size(detections, depth_image, camera_intrinsics_K: np.array, object_meshes: dict, lower_bound_active_for_obj_ids=[]):
+def filter_detections_by_appearance_versus_metric_size(detections, depth_image, camera_intrinsics_K: np.array, object_meshes: dict, lower_bound_active_for_obj_ids=[]):
 
     # Iterate over all detections in the depth image and filter in the accepted ones that respect expected object metric size
     # object_meshes is a dict mapping obj_id to corresponding 3D mesh of type trimesh.Trimesh
@@ -350,3 +355,34 @@ def filter_detections_by_appearance_and_metric_size(detections, depth_image, cam
                 selected_detections[this_obj_id].append(detection_this_id)
     
     return selected_detections
+
+
+def filter_detections(detections_by_obj_id, depth_image_metric_mm, object_meshes, intrinsics_K_matrix, 
+                      excluded_elongated_object_ids=[4, 8, 9]):
+    """
+    Filter detections based on metric size, and enclosure.
+    """
+
+    # I ended up disabling this one because I saw some true positives being rejected. Imagine you have multiple rods laid out
+    # close and parallel to each other... Training YOLO to produce oriented bounding boxes would have helped immensely here!
+    #detections_by_obj_id = select_most_confident_detections(detections_all_obj_ids, object_ids_group=[4, 8], iou_threshold=0.2)
+
+    # Check lower bound for objects that are very unlikely to be put standing upright on a flat surface due to their geometry
+    # For all others, we cannot check lower bound, as the aspect ratio of the object apperance on the image can change dramatically.
+    lower_bound_active_for_obj_ids =[]
+    #lower_bound_active_for_obj_ids = [0, 6, 8] I am going to disable this. It just occured to me that these objects can be put slanted on a bin
+    # against one of the bin's walls.
+    detections_by_obj_id = filter_detections_by_appearance_versus_metric_size(
+        detections_by_obj_id, 
+        depth_image_metric_mm,
+        intrinsics_K_matrix, 
+        object_meshes, 
+        lower_bound_active_for_obj_ids)
+    
+    # It is better if this inter-class enclosure check is made only after metric size checks, because of directional lighting
+    # casting a long shadow from a tall upright object, where the shadow is deemed a false positive, potentially yielding
+    # the target object as a false negative, given the enclosure check.
+    detections_by_obj_id = filter_enclosed_detections_across_classes(detections_by_obj_id, 
+                                                                           excluded_elongated_object_ids=excluded_elongated_object_ids)
+
+    return detections_by_obj_id
