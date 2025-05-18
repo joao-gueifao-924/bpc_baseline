@@ -731,7 +731,10 @@ def extract_roi_with_padding(image, roi, color=(127, 127, 127)):
     y_end = min(img_height, y + h)
 
     # Extract the ROI from the image
-    roi_cropped = image[y_start:y_end, x_start:x_end]
+    if len(image.shape) == 2:
+        roi_cropped = image[y_start:y_end, x_start:x_end]
+    else:
+        roi_cropped = image[y_start:y_end, x_start:x_end, :] # all color channels
 
     # Add padding to the ROI
     padded_roi = cv2.copyMakeBorder(
