@@ -232,7 +232,7 @@ def filter_enclosed_detections_across_classes(detections, excluded_elongated_obj
             filtered_detections[this_obj_id].append(detection_this_id)
     return filtered_detections
 
-def is_object_detection_correct_given_metric_size(detection, depth_image, camera_intrinsics_K, mesh: trimesh.Trimesh, lower_bound_active:bool):
+def is_object_detection_correct_given_metric_size(detection, depth_image, camera_intrinsics_K, mesh: trimesh.Trimesh, lower_bound_active:bool, meshes_are_in_millimeters=True):
     """
     Filter the detection based on its metric size.
     YOLO detector by itself does not assess metric size of the detected objects.
@@ -264,7 +264,7 @@ def is_object_detection_correct_given_metric_size(detection, depth_image, camera
     depth_mask = np.zeros_like(depth_image).astype(np.uint8)
     x1, y1, x2, y2 = detection['bbox']
     cv2.rectangle(depth_mask, (x1,y1), (x2,y2), 255, cv2.FILLED)
-    depth_mask = depth_mask.astype(np.bool)
+    depth_mask = depth_mask.astype(bool)
 
     depth_values = depth_image[depth_mask]
     depth_values = depth_values[:].copy()
@@ -287,6 +287,9 @@ def is_object_detection_correct_given_metric_size(detection, depth_image, camera
     
     # Get the diameter of the object from the mesh bounding box
     object_diameter = 2 * mesh.bounding_sphere.primitive.radius
+
+    if not meshes_are_in_millimeters: # then it is in meters
+        object_diameter *= 1000.0
 
     # Compute the expected size of the object in pixels
     # Using the pinhole camera model: size_in_pixels = (focal_length * object_size) / distance
@@ -334,7 +337,7 @@ def get_camera_fov(image, camera_intrinsics_K, out_degrees=True):
 
     return fov_x, fov_y
 
-def filter_detections_by_appearance_versus_metric_size(detections, depth_image, camera_intrinsics_K: np.array, object_meshes: dict, lower_bound_active_for_obj_ids=[]):
+def filter_detections_by_appearance_versus_metric_size(detections, depth_image, camera_intrinsics_K: np.array, object_meshes: dict, lower_bound_active_for_obj_ids=[], meshes_are_in_millimeters=True):
 
     # Iterate over all detections in the depth image and filter in the accepted ones that respect expected object metric size
     # object_meshes is a dict mapping obj_id to corresponding 3D mesh of type trimesh.Trimesh
@@ -347,18 +350,18 @@ def filter_detections_by_appearance_versus_metric_size(detections, depth_image, 
         for detection_this_id in detections_this_id:
             lower_bound_active = this_obj_id in lower_bound_active_for_obj_ids
 
-            debug_val_prior = is_object_detection_correct_given_metric_size(detection_this_id, depth_image, camera_intrinsics_K, mesh, lower_bound_active)
-            if debug_val_prior is False and this_obj_id == 1:
-                dummy = None
+            # debug_val_prior = is_object_detection_correct_given_metric_size(detection_this_id, depth_image, camera_intrinsics_K, mesh, lower_bound_active, meshes_are_in_millimeters)
+            # if debug_val_prior is False and this_obj_id == 1:
+            #     dummy = None
             
-            if is_object_detection_correct_given_metric_size(detection_this_id, depth_image, camera_intrinsics_K, mesh, lower_bound_active):
+            if is_object_detection_correct_given_metric_size(detection_this_id, depth_image, camera_intrinsics_K, mesh, lower_bound_active, meshes_are_in_millimeters):
                 selected_detections[this_obj_id].append(detection_this_id)
     
     return selected_detections
 
 
 def filter_detections(detections_by_obj_id, depth_image_metric_mm, object_meshes, intrinsics_K_matrix, 
-                      excluded_elongated_object_ids=[4, 8, 9]):
+                      excluded_elongated_object_ids=[4, 8, 9], meshes_are_in_millimeters=True):
     """
     Filter detections based on metric size, and enclosure.
     """
@@ -377,7 +380,8 @@ def filter_detections(detections_by_obj_id, depth_image_metric_mm, object_meshes
         depth_image_metric_mm,
         intrinsics_K_matrix, 
         object_meshes, 
-        lower_bound_active_for_obj_ids)
+        lower_bound_active_for_obj_ids,
+        meshes_are_in_millimeters)
     
     # It is better if this inter-class enclosure check is made only after metric size checks, because of directional lighting
     # casting a long shadow from a tall upright object, where the shadow is deemed a false positive, potentially yielding
