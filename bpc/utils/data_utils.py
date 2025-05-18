@@ -548,7 +548,7 @@ def compose_grey_plus_hillshade_depth_image(img_gray_np, img_depth_np_raw_pixel_
     hillshade_img_0 = hillshade_depth_image(img_depth_np_raw_pixel_values, new_width=new_width, azimuth=0, is_synthetic=is_synthetic)
     hillshade_img_135 = hillshade_depth_image(img_depth_np_raw_pixel_values, new_width=new_width, azimuth=135, is_synthetic=is_synthetic)
 
-    w,h = hillshade_img_0.shape
+    h,w = hillshade_img_0.shape
 
     if len(img_gray_np.shape) and img_gray_np.shape[-1] == 3:
         img_gray_np = img_gray_np[:,:,0] # get only one channel, they are all the same
