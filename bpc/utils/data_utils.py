@@ -558,9 +558,6 @@ def compose_grey_plus_hillshade_depth_image(img_gray_np, img_depth_np_raw_pixel_
     composed_img_np = np.stack((img_gray_np, hillshade_img_0, hillshade_img_135), axis=-1)
     return composed_img_np
 
-
-
-
 def compose_grey_lograd_depth_image(img_gray_np, img_depth_np_raw_pixel_values, depth_scale_pixel_to_mm=0.1, max_depth_mm=5000.0):
     """
     Concatenates greyscale image with gradients of depth image into a 3-channel image.
@@ -593,7 +590,6 @@ def compose_grey_lograd_depth_image(img_gray_np, img_depth_np_raw_pixel_values, 
 
     # Stack to create 3-channel image: (Grayscale, SobelX, SobelY)
     return np.stack((img_gray_np, sobel_x_clipped, sobel_y_clipped), axis=-1)
-
 
 def apply_image_transformations(image, apply_affine_transformations=False, apply_clahe=True, apply_negative=True, apply_contrast_gamma_correction=True, apply_pixel_noise=True):
     # Apply distortions to the image:
@@ -700,7 +696,6 @@ def get_color_pallete():
     ]
     return colors
 
-
 def get_color_for_class_id(class_id, color_pallete=None, as_bgr=False):
     if color_pallete is None:
         color_pallete = get_color_pallete()
@@ -709,3 +704,44 @@ def get_color_for_class_id(class_id, color_pallete=None, as_bgr=False):
         return color[::-1]
     else:
         return color
+
+def extract_roi_with_padding(image, roi, color=(127, 127, 127)):
+    """
+    Extracts a ROI from an image, padding the out-of-bounds area with a specified color using cv2.copyMakeBorder().
+    Args:
+        image: The input image.
+        roi: A tuple (x, y, w, h) defining the ROI rectangle.
+        color: The padding color (default is gray).
+    Returns:
+        The extracted ROI with padding.
+    """
+    x, y, w, h = roi
+    img_height, img_width = image.shape[:2]
+
+    # Calculate padding values for each side
+    top = max(0, -y)
+    bottom = max(0, (y + h) - img_height)
+    left = max(0, -x)
+    right = max(0, (x + w) - img_width)
+
+    # Calculate the ROI within the image boundaries
+    x_start = max(0, x)
+    y_start = max(0, y)
+    x_end = min(img_width, x + w)
+    y_end = min(img_height, y + h)
+
+    # Extract the ROI from the image
+    roi_cropped = image[y_start:y_end, x_start:x_end]
+
+    # Add padding to the ROI
+    padded_roi = cv2.copyMakeBorder(
+        roi_cropped,
+        top,
+        bottom,
+        left,
+        right,
+        cv2.BORDER_CONSTANT,
+        value=color
+    )
+
+    return padded_roi
