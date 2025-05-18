@@ -566,21 +566,7 @@ def compose_grey_plus_hillshade_depth_image(img_gray_np, img_depth_np_raw_pixel_
     if len(img_depth_np_raw_pixel_values.shape) > 2 and img_depth_np_raw_pixel_values.shape[-1] == 3:
         img_depth_np_raw_pixel_values = img_depth_np_raw_pixel_values[:,:,0] # get only one channel, they are all the same
 
-    if x_range is not None:
-        x_range_min, x_range_max = x_range
-
-        # get the average of the 10% highest depth values (these are the background pixels that are further away from the camera):
-        depth_values = img_depth_np_raw_pixel_values.flatten()
-        depth_values_90 = np.percentile(depth_values, 100-10)
-        depth_values_mean_90 = np.mean(depth_values[depth_values > depth_values_90])
-
-        # Assign depth values that are outside the x_range to be the average of the 90% highest depth values.
-        img_depth_np_raw_pixel_values[:, 0:x_range_min] = depth_values_mean_90
-        img_depth_np_raw_pixel_values[:, x_range_max:] = depth_values_mean_90
-
-        # Do the same for img_gray_np, now with a dark gray color:
-        img_gray_np[:, 0:x_range_min] = 25
-        img_gray_np[:, x_range_max:]  = 25
+    delete_clutter(img_gray_np, img_depth_np_raw_pixel_values, x_range)
         
 
     hillshade_img_0 = hillshade_depth_image(img_depth_np_raw_pixel_values, new_width=new_width, azimuth=0, is_synthetic=is_synthetic)
@@ -593,6 +579,30 @@ def compose_grey_plus_hillshade_depth_image(img_gray_np, img_depth_np_raw_pixel_
 
     composed_img_np = np.stack((img_gray_np, hillshade_img_0, hillshade_img_135), axis=-1)
     return composed_img_np
+
+
+def delete_clutter(img_gray_np, img_depth_np_raw_pixel_values, x_range):
+    
+    img_gray_np = img_gray_np.copy()
+    img_depth_np_raw_pixel_values = img_depth_np_raw_pixel_values.copy()
+    
+    x_range_min, x_range_max = x_range
+
+    # get the average of the 10% highest depth values (these are the background pixels that are further away from the camera):
+    depth_values = img_depth_np_raw_pixel_values.flatten()
+    depth_values_90 = np.percentile(depth_values, 100-10)
+    depth_values_mean_90 = np.mean(depth_values[depth_values > depth_values_90])
+
+    # Assign depth values that are outside the x_range to be the average of the 90% highest depth values.
+    img_depth_np_raw_pixel_values[:, 0:x_range_min] = depth_values_mean_90
+    img_depth_np_raw_pixel_values[:, x_range_max:] = depth_values_mean_90
+
+    # Do the same for img_gray_np, now with a dark gray color:
+    img_gray_np[:, 0:x_range_min] = 25
+    img_gray_np[:, x_range_max:]  = 25
+
+    return img_gray_np, img_depth_np_raw_pixel_values
+
 
 def compose_grey_lograd_depth_image(img_gray_np, img_depth_np_raw_pixel_values, depth_scale_pixel_to_mm=0.1, max_depth_mm=5000.0):
     """

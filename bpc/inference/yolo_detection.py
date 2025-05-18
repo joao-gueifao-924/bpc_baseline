@@ -17,7 +17,7 @@ class YOLODetector:
     def __init__(self, yolo_model_path, yolo_detection_thresholds_path=None, obj_id=None):
         self.obj_id = obj_id # should be None for multi-class detector
         self.yolo = YOLO(yolo_model_path).cuda()
-        self.yolo_confidence_thresh = 0.01
+        self.yolo_confidence_thresh = 0.1
         self.image_size = 1280 # keep it as 1280, to be consistent with the YOLO model input size defined during training
         self.yolo_detection_thresholds = None
 
@@ -278,9 +278,10 @@ class ObjectDetector:
 
     This class wraps a multi-class YOLO detection model and provides methods to detect objects in images.
     """
-    def __init__(self, yolo_model_path, yolo_detection_thresholds_path, is_synthetic=False):
+    def __init__(self, yolo_model_path, yolo_detection_thresholds_path, is_synthetic=False, use_hillshade=False):
         self.yolo_detector = YOLODetector(yolo_model_path, yolo_detection_thresholds_path)
         self.is_synthetic = is_synthetic
+        self.use_hillshade = use_hillshade
 
     def detect(self, greyscale_image, depth_image_raw_values, xrange=None):
         """
@@ -290,18 +291,23 @@ class ObjectDetector:
         # Infer for all object IDs at once, then apply inter-class filtering:
         detections_all_obj_ids = {}
 
-        yolo_input = du.compose_grey_plus_hillshade_depth_image(greyscale_image, 
-                                                                depth_image_raw_values, 
-                                                                xrange,
-                                                                new_width=self.yolo_detector.image_size, 
-                                                                is_synthetic=self.is_synthetic)
+        if self.use_hillshade:
+            yolo_input = du.compose_grey_plus_hillshade_depth_image(greyscale_image, 
+                                                                    depth_image_raw_values, 
+                                                                    xrange,
+                                                                    new_width=self.yolo_detector.image_size, 
+                                                                    is_synthetic=self.is_synthetic)
+            
+            # I accidentally inverted the order of channels when running the data preparation pipeline (prepare_data.py)
+            # and now my YOLO model must be fed with the channels reversed as well!     (-__-)'
+            yolo_input = cv2.cvtColor(yolo_input, cv2.COLOR_RGB2BGR)
+            max_original_image_side = np.max(greyscale_image.shape)
+            rescale_factor = max_original_image_side / self.yolo_detector.image_size
+        else:
+            img_gray_np, _ = du.delete_clutter(greyscale_image, depth_image_raw_values, xrange)
+            yolo_input = np.stack((img_gray_np, img_gray_np, img_gray_np), axis=-1)
+            rescale_factor = 1.0
 
-        # I accidentally inverted the order of channels when running the data preparation pipeline (prepare_data.py)
-        # and now my YOLO model must be fed with the channels reversed as well!     (-__-)'
-        yolo_input = cv2.cvtColor(yolo_input, cv2.COLOR_RGB2BGR)
-
-        max_original_image_side = np.max(greyscale_image.shape)
-        rescale_factor = max_original_image_side / self.yolo_detector.image_size
         all_detections_by_class_id = self.yolo_detector.detect(yolo_input, rescale_factor=rescale_factor)
         
         # For phase 2 of the BPC challenge, given how the YOLO multi-class model was trained, each class ID maps to Object ID by same index value.
