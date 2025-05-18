@@ -543,15 +543,51 @@ def hillshade_depth_image(depth_image, new_width=1280, azimuth=135, is_synthetic
     return hillshade_img
 
 
-def compose_grey_plus_hillshade_depth_image(img_gray_np, img_depth_np_raw_pixel_values, new_width=1280, is_synthetic=False):
+def compose_grey_plus_hillshade_depth_image(img_gray_np, img_depth_np_raw_pixel_values, x_range=None, new_width=1280, is_synthetic=False):
+    """
+    Composes a greyscale image with a hillshade depth image.
+    Args:
+        img_gray_np: Grayscale image as numpy array
+        img_depth_np_raw_pixel_values: Raw depth image as numpy array
+        x_range: Tuple (x_range_min, x_range_max) defining the range of x-values to delete image contents outside the range.
+            This is to avoid background clutter seen by camera 1 in the dataset (We only use cam1 for now). This clutter is present outside the x_range.
+            This way, we avoid lots of false positives in the YOLO model.
+            If x_range is None, no range is deleted.
+        new_width: Width of the output image
+        is_synthetic: Whether the greyscale and depth images are synthetic, to decide to whether apply noise to make them more realistic.
+    """
+
+    img_depth_np_raw_pixel_values = img_depth_np_raw_pixel_values.copy()
+    img_gray_np = img_gray_np.copy()
+
+    if len(img_gray_np.shape) > 2 and img_gray_np.shape[-1] == 3:
+        img_gray_np = img_gray_np[:,:,0] # get only one channel, they are all the same
+
+    if len(img_depth_np_raw_pixel_values.shape) > 2 and img_depth_np_raw_pixel_values.shape[-1] == 3:
+        img_depth_np_raw_pixel_values = img_depth_np_raw_pixel_values[:,:,0] # get only one channel, they are all the same
+
+    if x_range is not None:
+        x_range_min, x_range_max = x_range
+
+        # get the average of the 10% highest depth values (these are the background pixels that are further away from the camera):
+        depth_values = img_depth_np_raw_pixel_values.flatten()
+        depth_values_90 = np.percentile(depth_values, 100-10)
+        depth_values_mean_90 = np.mean(depth_values[depth_values > depth_values_90])
+
+        # Assign depth values that are outside the x_range to be the average of the 90% highest depth values.
+        img_depth_np_raw_pixel_values[:, 0:x_range_min] = depth_values_mean_90
+        img_depth_np_raw_pixel_values[:, x_range_max:] = depth_values_mean_90
+
+        # Do the same for img_gray_np, now with a dark gray color:
+        img_gray_np[:, 0:x_range_min] = 25
+        img_gray_np[:, x_range_max:]  = 25
+        
 
     hillshade_img_0 = hillshade_depth_image(img_depth_np_raw_pixel_values, new_width=new_width, azimuth=0, is_synthetic=is_synthetic)
     hillshade_img_135 = hillshade_depth_image(img_depth_np_raw_pixel_values, new_width=new_width, azimuth=135, is_synthetic=is_synthetic)
 
     h,w = hillshade_img_0.shape
 
-    if len(img_gray_np.shape) and img_gray_np.shape[-1] == 3:
-        img_gray_np = img_gray_np[:,:,0] # get only one channel, they are all the same
 
     img_gray_np = cv2.resize(img_gray_np, (w,h), interpolation=cv2.INTER_LINEAR)
 
